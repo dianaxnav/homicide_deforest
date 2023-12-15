@@ -1,0 +1,234 @@
+---
+title: "final_proj"
+format: html
+editor: visual
+---
+
+# Homicide Rates and Tree Cover Loss(ha)
+
+## Load all libraries and data
+
+```{r, warning = F, message=F}
+knitr::opts_chunk$set(echo = TRUE)
+# Load all the packages needed here
+
+library(gt)
+library(tufte)
+library(fabletools)
+library(broom)
+library(forecast)
+library(tidyverse)
+library(lterdatasampler)
+library(tsibble)
+library(feasts)
+library(lubridate)
+library(tidyverse)
+library(ggplot2)
+library(readxl)
+
+#read in all deforestation data that i could potentially use 
+tree_cover_loss <- read_csv("./data/municipality_loss/treecover_loss_by_region__ha.csv")
+
+#take a look at the tree coverage by region 
+metadata <- read_csv("./data/location/metadata.csv") 
+
+#take a look at the tree coverage by region 
+tree_coverby_region <- read_csv("./data/location/treecover_extent_2010_by_region__ha.csv") 
+
+#take a look at the info to see which countries match with what number 
+info <- read_csv("./data/municipality_loss/adm1_metadata.csv")
+
+dominant_driver <- read_csv("data/dominant_driver/treecover_loss__ha.csv")
+
+```
+
+```{r, warning = F, message = F}
+#read in the homicide rate data
+crime <- read_excel("data/crime_municipality.xlsx")
+```
+
+Add the info column to make the names appear instead of numbers
+
+```{r}
+#edit info to join by column
+info_new <- info %>% 
+  rename(adm1 = adm1__id)
+
+deforestation_new <-left_join(tree_cover_loss, info_new, by = "adm1")
+
+tree_coverby_region1 <- left_join(tree_coverby_region, info_new, by = "adm1")
+
+#this is the new dataset with which we will join the crime rate data 
+```
+
+## Clean up the homicide rates data
+
+```{r, message = F}
+library(janitor)
+#crime rate data 
+crime_new <- crime %>% 
+  pivot_longer(cols = names(crime)[7:32], #grab cols 7 through 32 and switch them to one col 
+                    values_to = "homicide_count") %>% 
+  rename(year = name) #rename the col year
+
+crime_new <- crime_new %>% 
+  clean_names()
+
+```
+
+In order to join the data, I will remove unnecessary columns and fix the names to match the names of `deforestation_new` data.
+
+```{r, message = F}
+#now we need to work on joining the data together
+
+crime_bystate <- crime_new %>% 
+  group_by(state, year) %>% 
+  summarise(homicide_count = sum(homicide_count)) %>% 
+  filter(year %in% 2001:2014) %>% 
+  rename(name = state) %>% 
+  mutate(name = sub("Michoacán de Ocampo", "Michoacán", name)) %>% 
+  mutate(name = sub("Coahuila de Zaragoza", "Coahuila", name)) %>% 
+  mutate(name = sub("Veracruz de Ignacio de la Llave", "Veracruz", name)) %>% 
+  na.omit()
+
+
+deforestation_bystate <- deforestation_new %>% 
+  select(umd_tree_cover_loss__year, umd_tree_cover_loss__ha, name,gfw_gross_emissions_co2e_all_gases__Mg) %>% 
+  group_by(name, umd_tree_cover_loss__year) %>% 
+  summarise(tree_coverloss_ha = sum(umd_tree_cover_loss__ha)) %>% 
+  filter(umd_tree_cover_loss__year %in% 2001:2014) %>% 
+  rename(year = umd_tree_cover_loss__year) %>% 
+  na.omit() 
+  
+```
+
+## Join the data
+
+Match the class for plotting.
+
+```{r, message = F}
+#make sure its the same class 
+deforestation_bystate$year <- as.character(deforestation_bystate$year)
+
+#join data 
+homicide_deforestation <- left_join(crime_bystate, deforestation_bystate)
+
+```
+
+#Plot deforestation data
+
+```{r, warning = F}
+
+ggplot(data = homicide_deforestation, aes(x = homicide_count)) +
+        geom_histogram(fill = "indianred", col = "white") +
+  labs(title = "Histogram of Distribution",x = "Tree Cover Loss(ha)", y = "Count")
+
+ggplot(data = homicide_deforestation, aes(x = tree_coverloss_ha)) +
+        geom_histogram(fill = "seagreen", col = "white") +
+  labs(title = "Histogram of Distribution", x = "Homicide Count", y= "Count")
+
+#plot the precip 
+ggplot(homicide_deforestation, aes(sample = homicide_count))+
+  geom_qq() +
+  geom_qq_line() + #add the normal dis. line
+  labs(title = "Assessing distribution of Homicide Count", y = "Homicide Count", x = "σ") #label
+
+ggplot(homicide_deforestation, aes(sample = tree_coverloss_ha))+
+  geom_qq() +
+  geom_qq_line() + #add the normal dis. line
+  labs(title = "Assessing distribution of Tree Cover Loss(ha)", y = "Tree Cover loss(ha)", x = "σ")  #label
+
+#the distibution is off for the tree cover loss so we will find the log of tree cover loss and see how that lines up with the QQ line
+
+#compute the log of tree_coverloss
+log_treecover <- log(homicide_deforestation$tree_coverloss_ha)
+
+#plot the variable
+ggplot(homicide_deforestation, aes(sample = log_treecover))+
+  geom_qq()+
+  geom_qq_line() + #show the line
+  labs(title = "Natural log of Tree Cover Loss(ha)",x = "σ", y = "Qaurtile range") 
+
+#
+```
+
+#this qq plot looks better
+
+```{r, warning = F, message = F}
+#plot the data using log
+ggplot(data=homicide_deforestation, aes(x=log(tree_coverloss_ha), y = homicide_count)) + 
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = lm, se= FALSE)  +
+  labs(title = "Tree Cover Loss(ha) and Homicide Count",
+       y= "Homicide Count",
+       x = "Natural log of Tree cover loss")
+```
+
+$$homicidecounts_i=\beta_{0}+\beta_{1} \cdot year_i +\varepsilon_i$$
+
+$$homicidecounts_i =\beta_{0}+\beta_{1} \cdot treecoverloss_i +\beta_{2} \cdot \text year_i+\varepsilon_i$$
+
+These equations represent the linear regression model.
+
+```{r, warning = F}
+# Assuming your dataset is named 'your_dataset'
+cat_deforest <- homicide_deforestation %>% 
+  mutate(year_cat = ifelse(year > 2007, "After 2007", "Before 2007"))
+  
+model1 <- lm(homicide_count ~ year_cat, data = cat_deforest) %>% 
+  summary()
+
+model1
+
+ #Linear regression model 
+ model2 <- lm(homicide_count ~ (log(tree_coverloss_ha)) + year_cat, data = cat_deforest) 
+ summary(model2)
+```
+
+As you can see, adding the distribution of the `log(tree_coverloss_ha)` allows for a better distribution with the plot, but resulting in a lower significance value meaning that the relationship between homicide_count and year is more significant than adding the `tree_coverloss_ha`.
+
+```{r, warning = F}
+cat_deforest %>% 
+  ggplot(aes(x = (log(tree_coverloss_ha)), y = homicide_count, color = year_cat)) +
+  geom_point() 
+
+mod <- lm(homicide_count ~ tree_coverloss_ha + year_cat, data = cat_deforest)
+augment(mod)
+```
+
+Now we are plotting it with the fitted line according to the model.
+
+```{r, warning = F}
+cat_deforest %>% 
+  ggplot(aes(x = (log(tree_coverloss_ha)), y = homicide_count, color = year_cat)) +
+  geom_point(alpha = 0.5) +
+  geom_line(data = augment(mod), aes(y = .fitted, color = year_cat)) + 
+  scale_color_manual(values = c(
+    'After 2007' = 'seagreen',
+    'Before 2007' = 'indianred'
+  )) +
+  labs(x = "Natural log of Tree Cover Loss", y = "Homicide Count", title = "Homicide Count with Tree Cover Loss(ha)")
+```
+
+## Time Series of homicide count and tree_coverloss_ha.
+
+```{r, warning = F}
+homicide_deforestation$year <- as.Date(paste0(homicide_deforestation$year, "-01-01"), format = "%Y-%m-%d")
+
+# Create a time series plot using ggplot2
+p1 <- homicide_deforestation %>% 
+  ggplot(aes(year, tree_coverloss_ha)) +
+  stat_summary(geom = 'line', fun = 'mean', color = "seagreen") +
+  stat_summary(geom = "line", fun = 'median', color = 'cornflowerblue') +
+  geom_smooth(se = FALSE, color = 'black')  +
+  labs(x = "Year", y = "Tree Cover Loss(ha)", title = "Tree Coverage Loss(ha) from 2001 to 2014")
+
+p2 <- homicide_deforestation %>% 
+  ggplot(aes(year, homicide_count)) +
+  stat_summary(geom = 'line', fun = 'mean', color = "seagreen") +
+  stat_summary(geom = "line", fun = 'median', color = 'cornflowerblue') +
+  geom_smooth(se = FALSE, color = 'black')  +
+  labs(x = "Year", y = "Homicide Count", title = "Homicide Count from 2001 to 2014")
+p1
+p2
+```
